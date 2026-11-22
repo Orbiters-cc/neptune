@@ -20,8 +20,17 @@ struct npt_resource;
 
 /* Hard cap on per-call payload byte_size.  Bounded so the byte_size+7
  * alignment math can't wrap to 0 on a hostile value and read stale
- * bytes. */
-#define NPT_MAX_RESOURCE_UPDATE_BYTES (64u << 20)
+ * bytes.  It sizes no buffer: the payload is read in place from the
+ * command stream (the guest's upload buffer, grown to fit, behind
+ * EXECUTE_COMMAND_STREAM's range check), and only where it is in the
+ * stream (npt_cs_decoder_get_blob_storage, or the temp pool's own 1 GiB
+ * bound).  64 MiB refused real uploads: VRChat sends one of 70,744,960
+ * bytes after an avatar loads, and the refusal fails the guest's ring
+ * for good.  1 GiB is the largest a 16384 x 16384 RGBA8 subresource
+ * takes, keeps byte_size+7 and the guest's uint32_t command size and
+ * doubling upload buffer clear of wrapping, and equals the temp pool's
+ * bound. */
+#define NPT_MAX_RESOURCE_UPDATE_BYTES (1u << 30)
 
 /* RESOURCE_UPDATE.  `payload` points at the contiguous source bytes in
  * the decoder's stream; lifetime is the caller's responsibility. */
