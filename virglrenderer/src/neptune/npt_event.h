@@ -38,6 +38,7 @@ struct npt_event_proxy {
     * doesn't hit EBADF and the in-flight dup_fd can still observe
     * the signal. */
    uint32_t refcount;
+   uint64_t otl_id;              /* in the host timeline (npt_otl.h), 0 while it is off */
 };
 
 struct npt_event_pending_arm {
@@ -49,6 +50,7 @@ struct npt_event_pending_arm {
     * reference to the sync-queue entry (by pointer) instead of
     * unreffing; the sync queue releases it after the fence retires. */
    bool     auto_release;
+   uint64_t otl_id;         /* this arm in the host timeline, 0 while it is off */
    /* GATE_WAIT arms: retire only when the fence truly reaches
     * check_value, re-verified on every wakeup, since the ring's gate
     * event also carries other gates' fires.  check_fence holds an

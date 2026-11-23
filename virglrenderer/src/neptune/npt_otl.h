@@ -22,6 +22,10 @@ void npt_otl_batch_begin(void);
 void npt_otl_batch_end(void);
 void npt_otl_command(uint32_t cmd_type);
 
+/* The guest exported an image (a texture other processes map), and let go of an object. */
+void npt_otl_export(uint32_t ctx_id, void *texture, uint64_t identity, uint64_t size, uint32_t format);
+void npt_otl_release(void *object);
+
 /* A D3D11 fence Signal was decoded, between start and now. */
 void npt_otl_signal(uint32_t ctx_id, uint64_t start, void *fence, uint64_t value);
 

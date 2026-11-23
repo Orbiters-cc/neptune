@@ -198,9 +198,8 @@ npt_shared_export_blob(struct npt_context *ctx, uint64_t texture_id,
 
    const int export_fd = desc->fd;
    if (otl_active())
-      otl_put(otl_now(), OTL_N_EXPORT, ctx->ctx_id, (uint64_t)(uintptr_t)texture,
-              otl_identity(export_fd), (uint64_t)desc->width << 32 | desc->height,
-              desc->dxgi_format, 0, 0);
+      npt_otl_export(ctx->ctx_id, texture, otl_identity(export_fd, desc->offset),
+                     (uint64_t)desc->width << 32 | desc->height, desc->dxgi_format);
    /* The blob has to span the window, not just the surface: a placed
     * texture starts `offset` into the heap's object. */
    const uint64_t export_size = desc->offset + desc->size;

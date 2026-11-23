@@ -306,6 +306,11 @@ event_proxy_create_locked(struct npt_context *ctx, uint64_t token,
    pr->token    = token;
    pr->proxy    = hfd;
    pr->refcount = initial_refcount;
+   if (otl_active()) {
+      pr->otl_id = otl_id();
+      otl_put(otl_now(), OTL_N_EVENT, 0, pr->otl_id,
+              (uint64_t)(uintptr_t)event_fd_signal_handle(&pr->proxy), ctx->ctx_id, 0, 0, 0);
+   }
    /* Key points into pr->token so the hash key stays valid for pr's
     * lifetime. */
    _mesa_hash_table_insert_pre_hashed(ctx->event_proxies,
@@ -409,6 +414,10 @@ npt_event_arm(struct npt_context *ctx, uint64_t token, uint32_t ring_idx,
       return false;
    }
 
+   const uint64_t otl_arm = otl_active() ? otl_id() : 0;
+   if (otl_active())
+      otl_put(otl_now(), OTL_N_ARM, ring_idx, otl_arm, pr->otl_id, ctx->ctx_id, 0, 0, 0);
+
    /* A fence for this ring may already be parked, having outrun this ARM
     * on the independent virtio channel.  Consume the arm here exactly as
     * a pop would. */
@@ -416,8 +425,8 @@ npt_event_arm(struct npt_context *ctx, uint64_t token, uint32_t ring_idx,
       event_take_parked_locked(ctx, ring_idx);
    if (parked) {
       if (otl_active())
-         otl_put(otl_now(), OTL_N_PAIR, ring_idx, parked->fence_id,
-                 (uint64_t)(uintptr_t)event_fd_signal_handle(&pr->proxy), ctx->ctx_id, 0, 0, 0);
+         otl_put(otl_now(), OTL_N_PAIR, ring_idx, parked->fence_id, pr->otl_id, ctx->ctx_id,
+                 otl_arm, 0, 0);
       /* AUTO_RELEASE: transfer the arm reference to the sync-queue entry
        * instead of unreffing, so the signal handle the D3D library stored
        * stays valid until it has been written. */
@@ -444,6 +453,7 @@ npt_event_arm(struct npt_context *ctx, uint64_t token, uint32_t ring_idx,
    p->dup_fd   = dup_fd;
    p->proxy    = pr;
    p->auto_release = auto_release;
+   p->otl_id   = otl_arm;
    list_addtail(&p->head, &ctx->event_pending_arms);
 
    mtx_unlock(&ctx->event_mutex);
@@ -597,8 +607,8 @@ npt_event_pop_arm_or_park_fence(struct npt_context *ctx, uint32_t ring_idx,
          out->check_value = p->check_value;
          list_del(&p->head);
          if (otl_active() && p->proxy)
-            otl_put(otl_now(), OTL_N_PAIR, ring_idx, fence_id,
-                    (uint64_t)(uintptr_t)event_fd_signal_handle(&p->proxy->proxy), ctx->ctx_id, 0, 0, 0);
+            otl_put(otl_now(), OTL_N_PAIR, ring_idx, fence_id, p->proxy->otl_id, ctx->ctx_id,
+                    p->otl_id, 0, 0);
          if (p->proxy) {
             /* AUTO_RELEASE: transfer the arm reference to the caller's
              * sync-queue entry (released after retirement, post-fire). */

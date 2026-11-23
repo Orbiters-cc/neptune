@@ -225,6 +225,7 @@ npt_queue_thread(void *arg)
          t1 = t0;
       }
       int rc = 0;
+      uint64_t otl_poll = 0, otl_woken = 0;
 
       if (sync->check_fence) {
          /* The event is only a wakeup source; the value is the truth.
@@ -263,9 +264,9 @@ npt_queue_thread(void *arg)
          goto retire;
       }
 
-      const uint64_t otl_poll = otl_active() ? otl_now() : 0;
+      otl_poll = otl_active() ? otl_now() : 0;
       rc = npt_wait_sync_fd(sync->sync_fd, kPollTimeoutMs);
-      const uint64_t otl_woken = otl_active() ? otl_now() : 0;
+      otl_woken = otl_active() ? otl_now() : 0;
       if (trace)
          clock_gettime(CLOCK_MONOTONIC, &t1);
 
@@ -289,9 +290,6 @@ npt_queue_thread(void *arg)
                  "retiring as device-lost", queue->ring_idx, sync->fence_id,
                  NPT_QUEUE_DEVICE_LOST_SEC);
       }
-      if (otl_active())
-         otl_put(otl_woken, OTL_N_RETIRE, queue->ring_idx, sync->fence_id, otl_woken, otl_poll,
-                 ctx->ctx_id, rc, 0);
 retire:;
 
       if (trace) {
@@ -312,7 +310,12 @@ retire:;
        * once the game had the focus). */
       npt_feedback_poll_interval(queue->context, 0);
       list_del(&sync->head);
+      const uint32_t otl_ring = sync->ring_idx;
+      const uint64_t otl_fence = sync->fence_id;
       npt_queue_sync_retire(queue, sync);
+      if (otl_poll && otl_active())
+         otl_put(otl_now(), OTL_N_RETIRE, otl_ring, otl_fence, otl_woken, otl_poll, ctx->ctx_id,
+                 (uint64_t)(int64_t)rc, 0);
    }
    mtx_unlock(&queue->sync_thread.mutex);
 

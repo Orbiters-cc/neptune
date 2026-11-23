@@ -443,6 +443,8 @@ npt_context_release_object(struct npt_context *ctx, uint64_t guest_id)
       return;
 
    npt_feedback_forget_orphan_signals(ctx, obj);
+   if (otl_active())
+      npt_otl_release(obj);
    npt_com_release(obj);
 
    /* Only after the host library dropped the heap, and with it the

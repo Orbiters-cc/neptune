@@ -19,7 +19,19 @@
 #include "util/bitscan.h"
 #include "virgl_fence.h"
 
-#include "neptune/otl.h"
+#ifdef ENABLE_NEPTUNE
+#include "neptune/otl.h" /* the host timeline, with Neptune only */
+#define proxy_otl_init() otl_init("vtest")
+#define proxy_otl_retire(ctx, ring_idx, fence)                                                \
+   do {                                                                                       \
+      if (otl_active())                                                                       \
+         otl_put(otl_now(), OTL_V_RETIRE, ring_idx, (fence)->seqno, (fence)->fence_id,        \
+                 (ctx)->base.ctx_id, 0, 0, 0);                                                \
+   } while (0)
+#else
+#define proxy_otl_init() ((void)0)
+#define proxy_otl_retire(ctx, ring_idx, fence) ((void)0)
+#endif
 
 #include "proxy_client.h"
 
@@ -135,8 +147,7 @@ proxy_context_retire_timeline_fences_locked(struct proxy_context *ctx,
       if (!proxy_fence_is_signaled(fence, timeline->cur_seqno) && !force_retire_all)
          return false;
 
-      if (otl_active())
-         otl_put(otl_now(), OTL_V_RETIRE, ring_idx, fence->seqno, fence->fence_id, ctx->base.ctx_id, 0, 0, 0);
+      proxy_otl_retire(ctx, ring_idx, fence);
       ctx->base.fence_retire(&ctx->base, ring_idx, fence->fence_id);
 
       /* The fence is done; drop the fd submit_fence registered for it (see
@@ -827,7 +838,7 @@ proxy_context_create(uint32_t ctx_id,
 
    const uint32_t capset_id = ctx_flags & VIRGL_RENDERER_CONTEXT_FLAG_CAPSET_ID_MASK;
 
-   otl_init("vtest");
+   proxy_otl_init();
 
    int ctx_fd;
    if (!proxy_client_create_context(client, ctx_id, capset_id, debug_len, debug_name,
