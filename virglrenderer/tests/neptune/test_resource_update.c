@@ -71,6 +71,42 @@ fake_get_immediate_context(void *self, ID3D11DeviceContext **out)
 
 static uint32_t expected_bytes;
 
+/* The stand-in texture's description: set per case. */
+static D3D11_TEXTURE2D_DESC fake_desc;
+
+static void NPT_STDMETHODCALLTYPE
+fake_get_type(void *self, D3D11_RESOURCE_DIMENSION *out)
+{
+   (void)self;
+   *out = D3D11_RESOURCE_DIMENSION_TEXTURE2D;
+}
+
+static void NPT_STDMETHODCALLTYPE
+fake_get_desc(void *self, D3D11_TEXTURE2D_DESC *out)
+{
+   (void)self;
+   *out = fake_desc;
+}
+
+/* A texture of RGBA8 (28) rows of 16384 bytes (the command's row pitch) that
+ * takes exactly `byte_size` bytes: the last row as long as what is left. */
+static void
+desc_for(uint32_t byte_size)
+{
+   memset(&fake_desc, 0, sizeof(fake_desc));
+   const uint32_t rows = (byte_size + 16383u) / 16384u;
+   const uint32_t last = byte_size - (rows - 1) * 16384u;
+   fake_desc.Width = rows > 1 ? 4096 : last / 4;
+   fake_desc.Height = rows;
+   fake_desc.MipLevels = 1;
+   fake_desc.ArraySize = 4;
+   fake_desc.Format = (DXGI_FORMAT)28;
+   if (rows > 1 && last != 16384u) {
+      /* Narrower rows, the same count: (rows - 1) * pitch + width * 4 == byte_size. */
+      fake_desc.Width = last / 4;
+   }
+}
+
 static void NPT_STDMETHODCALLTYPE
 fake_update_subresource(void *self, ID3D11Resource *dst, UINT sub,
                         const D3D11_BOX *box, const void *data, UINT row,
@@ -99,6 +135,8 @@ fakes_init(void)
    resource_vtbl[NPT_IUNKNOWN_VTBL_ADDREF] = (void *)fake_add_ref;
    resource_vtbl[NPT_IUNKNOWN_VTBL_RELEASE] = (void *)fake_release;
    resource_vtbl[NPT_VTBL_ID3D11DeviceChild_GetDevice] = (void *)fake_get_device;
+   resource_vtbl[NPT_VTBL_ID3D11Resource_GetType] = (void *)fake_get_type;
+   resource_vtbl[NPT_VTBL_ID3D11Texture2D_GetDesc] = (void *)fake_get_desc;
    device_vtbl[NPT_IUNKNOWN_VTBL_RELEASE] = (void *)fake_release;
    device_vtbl[NPT_VTBL_ID3D11Device_GetImmediateContext] =
       (void *)fake_get_immediate_context;
@@ -188,6 +226,7 @@ update_arrives_whole(uint32_t byte_size, const char *what)
    }
    updates = 0;
    expected_bytes = byte_size;
+   desc_for(byte_size);
    const bool ok = npt_context_submit_cmd(ctx, buffer, size);
    char line[160];
    snprintf(line, sizeof(line), "%s: accepted", what);
@@ -220,10 +259,64 @@ update_refused(uint32_t byte_size, uint64_t present, const char *what)
    }
    updates = 0;
    expected_bytes = 0;
+   desc_for(byte_size);
    const bool ok = npt_context_submit_cmd(ctx, buffer, size);
    char line[160];
    snprintf(line, sizeof(line), "%s: refused, nothing called", what);
    CHECK(!ok && updates == 0, line);
+   npt_context_destroy(ctx);
+   free(buffer);
+}
+
+/* An update whose footprint, read from the resource's own description, is
+ * more than the bytes sent: nothing is called (the decoder goes on). */
+static void
+footprint_refused(uint32_t byte_size, void (*shape)(void), const char *what)
+{
+   size_t size;
+   const uint64_t aligned = ((uint64_t)byte_size + 7u) & ~(uint64_t)7u;
+   uint8_t *buffer = command(byte_size, aligned, &size);
+   struct npt_context *ctx = context_with_resource();
+   if (!buffer || !ctx) {
+      CHECK(0, "memory for the case");
+      return;
+   }
+   updates = 0;
+   expected_bytes = 0;
+   desc_for(byte_size);
+   shape();
+   (void)npt_context_submit_cmd(ctx, buffer, size);
+   char line[160];
+   snprintf(line, sizeof(line), "%s: not passed to UpdateSubresource", what);
+   CHECK(updates == 0, line);
+   npt_context_destroy(ctx);
+   free(buffer);
+}
+
+static void taller(void) { fake_desc.Height += 1; }
+static void wider(void) { fake_desc.Width = 8192; fake_desc.Height = 1; }
+static void unknown_format(void) { fake_desc.Format = (DXGI_FORMAT)130; }
+static void subresource_past_the_texture(void) { fake_desc.ArraySize = 1; }
+
+/* A command whose size is not its header's and its payload's. */
+static void
+size_mismatch_refused(void)
+{
+   size_t size;
+   uint8_t *buffer = command(4096, 4096, &size);
+   struct npt_context *ctx = context_with_resource();
+   if (!buffer || !ctx) {
+      CHECK(0, "memory for the case");
+      return;
+   }
+   struct npt_cmd_resource_update cmd;
+   memcpy(&cmd, buffer, sizeof(cmd));
+   cmd.header.cmd_size -= 8;
+   memcpy(buffer, &cmd, sizeof(cmd));
+   updates = 0;
+   desc_for(4096);
+   const bool ok = npt_context_submit_cmd(ctx, buffer, size);
+   CHECK(!ok && updates == 0, "a command size that is not the payload's: refused, nothing called");
    npt_context_destroy(ctx);
    free(buffer);
 }
@@ -242,6 +335,13 @@ main(void)
    update_refused(NPT_MAX_RESOURCE_UPDATE_BYTES + 1u, 0,
                   "one byte over the cap");
    update_refused(UINT32_MAX, 0, "UINT32_MAX (byte_size + 7 would wrap)");
+   update_refused(256u << 20, (256u << 20) / 2,
+                  "256 MiB with half of it missing (refused before any temporary allocation)");
+   size_mismatch_refused();
+   footprint_refused(70744960u, taller, "a texture one row taller than the bytes sent");
+   footprint_refused(4096u, wider, "a row wider than the bytes sent");
+   footprint_refused(4096u, unknown_format, "a format whose layout is not known");
+   footprint_refused(4096u, subresource_past_the_texture, "a subresource past the texture's");
    printf(failures ? "%d FAILED\n" : "all passed\n", failures);
    return failures ? 1 : 0;
 }

@@ -18,19 +18,37 @@
 struct npt_context;
 struct npt_resource;
 
-/* Hard cap on per-call payload byte_size.  Bounded so the byte_size+7
- * alignment math can't wrap to 0 on a hostile value and read stale
- * bytes.  It sizes no buffer: the payload is read in place from the
- * command stream (the guest's upload buffer, grown to fit, behind
- * EXECUTE_COMMAND_STREAM's range check), and only where it is in the
- * stream (npt_cs_decoder_get_blob_storage, or the temp pool's own 1 GiB
- * bound).  64 MiB refused real uploads: VRChat sends one of 70,744,960
- * bytes after an avatar loads, and the refusal fails the guest's ring
- * for good.  1 GiB is the largest a 16384 x 16384 RGBA8 subresource
- * takes, keeps byte_size+7 and the guest's uint32_t command size and
- * doubling upload buffer clear of wrapping, and equals the temp pool's
- * bound. */
-#define NPT_MAX_RESOURCE_UPDATE_BYTES (1u << 30)
+/* The largest RESOURCE_UPDATE taken.  The payload is read in place from
+ * the command stream (the guest copies anything larger than the ring's
+ * direct size into its upload buffer and sends EXECUTE_COMMAND_STREAM over
+ * it), and the command is refused unless the whole of it is in the stream.
+ * 64 MiB refused real uploads: VRChat sends one of 70,744,960 bytes after
+ * an avatar loads, and the refusal failed the guest's ring for good.
+ * 256 MiB is what the whole path was tested to (this repository's
+ * scripts/test-resource-update.sh, a stand-in resource), 3.8 times the
+ * largest upload seen, and keeps byte_size + 7, the guest's uint32_t
+ * command size and its doubling upload buffer (512 MiB for a 256 MiB
+ * payload) far from wrapping. */
+#define NPT_MAX_RESOURCE_UPDATE_BYTES (256u << 20)
+
+/* At most this much payload is staged in decoders' temporary buffers at
+ * once, whatever the contexts: a payload not contiguous in the stream is
+ * copied there, and many contexts at once must not each take the cap. */
+#define NPT_RESOURCE_UPDATE_STAGING_BUDGET (512ull << 20)
+
+/* The bytes UpdateSubresource reads from the payload for `resource`'s
+ * `subresource` with the given box and pitches, from the resource's own
+ * description: UINT64_MAX when the update is not one D3D11 can take (a box
+ * outside the subresource, a row pitch shorter than a row, a format whose
+ * layout is not known here). Exposed for the tests. */
+uint64_t
+npt_resource_update_footprint(void *resource, uint32_t subresource,
+                              uint32_t row_pitch, uint32_t depth_pitch,
+                              bool has_box,
+                              uint32_t box_left, uint32_t box_top, uint32_t box_front,
+                              uint32_t box_right, uint32_t box_bottom, uint32_t box_back);
+
+
 
 /* RESOURCE_UPDATE.  `payload` points at the contiguous source bytes in
  * the decoder's stream; lifetime is the caller's responsibility. */

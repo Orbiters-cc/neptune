@@ -90,11 +90,155 @@ npt_trace_tex(void *resource, const char *fmt, ...)
            d.CPUAccessFlags, msg);
 }
 
+/* A DXGI format's element: block width and height in pixels, and bytes per
+ * block. 2 for the two-plane 4:2:0 formats (NV12, P010, P016), whose chroma
+ * plane of half the rows follows the luma plane at the same pitch. false
+ * for a format whose layout is not known here. */
+static bool
+npt_format_block(uint32_t format, uint32_t *bw, uint32_t *bh, uint32_t *bytes, int *planes)
+{
+   *bw = *bh = 1;
+   *planes = 1;
+   if (format >= 1 && format <= 4) { *bytes = 16; return true; }        /* R32G32B32A32 */
+   if (format >= 5 && format <= 8) { *bytes = 12; return true; }        /* R32G32B32 */
+   if (format >= 9 && format <= 22) { *bytes = 8; return true; }        /* R16G16B16A16, R32G32, R32G8X24 */
+   if (format >= 23 && format <= 47) { *bytes = 4; return true; }       /* R10G10B10A2 .. X24_TYPELESS_G8 */
+   if (format >= 48 && format <= 59) { *bytes = 2; return true; }       /* R8G8, R16, D16 */
+   if (format >= 60 && format <= 65) { *bytes = 1; return true; }       /* R8, A8 */
+   if (format == 67) { *bytes = 4; return true; }                       /* R9G9B9E5 */
+   if (format == 68 || format == 69 || format == 107) {                 /* R8G8_B8G8, G8R8_G8B8, YUY2 */
+      *bw = 2; *bytes = 4; return true;
+   }
+   if (format == 108 || format == 109) { *bw = 2; *bytes = 8; return true; } /* Y210, Y216 */
+   if ((format >= 70 && format <= 72) || (format >= 79 && format <= 81)) { /* BC1, BC4 */
+      *bw = *bh = 4; *bytes = 8; return true;
+   }
+   if ((format >= 73 && format <= 78) || (format >= 82 && format <= 84) || (format >= 94 && format <= 99)) {
+      *bw = *bh = 4; *bytes = 16; return true;                          /* BC2, BC3, BC5, BC6H, BC7 */
+   }
+   if (format >= 85 && format <= 86) { *bytes = 2; return true; }       /* B5G6R5, B5G5R5A1 */
+   if (format >= 87 && format <= 93) { *bytes = 4; return true; }       /* B8G8R8A8, B8G8R8X8, XR_BIAS */
+   if (format == 115) { *bytes = 2; return true; }                      /* B4G4R4A4 */
+   if (format == 100 || format == 101) { *bytes = 4; return true; }     /* AYUV, Y410 */
+   if (format == 102) { *bytes = 8; return true; }                      /* Y416 */
+   if (format == 103) { *bytes = 1; *planes = 2; return true; }         /* NV12 */
+   if (format == 104 || format == 105) { *bytes = 2; *planes = 2; return true; } /* P010, P016 */
+   return false;
+}
+
+static uint32_t
+npt_mip(uint32_t size, uint32_t level)
+{
+   const uint32_t m = level < 32 ? size >> level : 0;
+   return m ? m : 1;
+}
+
+uint64_t
+npt_resource_update_footprint(void *resource, uint32_t subresource,
+                              uint32_t row_pitch, uint32_t depth_pitch,
+                              bool has_box,
+                              uint32_t box_left, uint32_t box_top, uint32_t box_front,
+                              uint32_t box_right, uint32_t box_bottom, uint32_t box_back)
+{
+   PFN_ID3D11Resource_GetType get_type =
+      NPT_COM_VTBL_FUNC(PFN_ID3D11Resource_GetType, npt_com_vtable(resource), NPT_VTBL_ID3D11Resource_GetType);
+   if (!get_type)
+      return UINT64_MAX;
+   D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+   get_type(resource, &dim);
+   uint32_t width = 1, height = 1, depth = 1, mips = 1, format = 0;
+   switch (dim) {
+   case D3D11_RESOURCE_DIMENSION_BUFFER: {
+      D3D11_BUFFER_DESC d;
+      memset(&d, 0, sizeof(d));
+      PFN_ID3D11Buffer_GetDesc get =
+         NPT_COM_VTBL_FUNC(PFN_ID3D11Buffer_GetDesc, npt_com_vtable(resource), NPT_VTBL_ID3D11Buffer_GetDesc);
+      if (!get || subresource != 0)
+         return UINT64_MAX;
+      get(resource, &d);
+      if (!has_box)
+         return d.ByteWidth;
+      if (box_left >= box_right || box_right > d.ByteWidth)
+         return UINT64_MAX;
+      return (uint64_t)box_right - box_left;
+   }
+   case D3D11_RESOURCE_DIMENSION_TEXTURE1D: {
+      D3D11_TEXTURE1D_DESC d;
+      memset(&d, 0, sizeof(d));
+      PFN_ID3D11Texture1D_GetDesc get =
+         NPT_COM_VTBL_FUNC(PFN_ID3D11Texture1D_GetDesc, npt_com_vtable(resource), NPT_VTBL_ID3D11Texture1D_GetDesc);
+      if (!get)
+         return UINT64_MAX;
+      get(resource, &d);
+      width = d.Width; mips = d.MipLevels ? d.MipLevels : 1; format = (uint32_t)d.Format;
+      if (subresource >= (uint64_t)mips * (d.ArraySize ? d.ArraySize : 1))
+         return UINT64_MAX;
+      break;
+   }
+   case D3D11_RESOURCE_DIMENSION_TEXTURE2D: {
+      D3D11_TEXTURE2D_DESC d;
+      memset(&d, 0, sizeof(d));
+      PFN_ID3D11Texture2D_GetDesc get =
+         NPT_COM_VTBL_FUNC(PFN_ID3D11Texture2D_GetDesc, npt_com_vtable(resource), NPT_VTBL_ID3D11Texture2D_GetDesc);
+      if (!get)
+         return UINT64_MAX;
+      get(resource, &d);
+      width = d.Width; height = d.Height; mips = d.MipLevels ? d.MipLevels : 1; format = (uint32_t)d.Format;
+      if (subresource >= (uint64_t)mips * (d.ArraySize ? d.ArraySize : 1))
+         return UINT64_MAX;
+      break;
+   }
+   case D3D11_RESOURCE_DIMENSION_TEXTURE3D: {
+      D3D11_TEXTURE3D_DESC d;
+      memset(&d, 0, sizeof(d));
+      PFN_ID3D11Texture3D_GetDesc get =
+         NPT_COM_VTBL_FUNC(PFN_ID3D11Texture3D_GetDesc, npt_com_vtable(resource), NPT_VTBL_ID3D11Texture3D_GetDesc);
+      if (!get)
+         return UINT64_MAX;
+      get(resource, &d);
+      width = d.Width; height = d.Height; depth = d.Depth; mips = d.MipLevels ? d.MipLevels : 1; format = (uint32_t)d.Format;
+      if (subresource >= mips)
+         return UINT64_MAX;
+      break;
+   }
+   default:
+      return UINT64_MAX;
+   }
+   uint32_t bw, bh, bytes;
+   int planes;
+   if (!npt_format_block(format, &bw, &bh, &bytes, &planes))
+      return UINT64_MAX;
+   const uint32_t level = subresource % mips;
+   const uint32_t mw = npt_mip(width, level), mh = npt_mip(height, level), md = npt_mip(depth, level);
+   uint32_t w = mw, h = mh, d = md;
+   if (has_box) {
+      if (box_left >= box_right || box_top >= box_bottom || box_front >= box_back ||
+          box_right > mw || box_bottom > mh || box_back > md)
+         return UINT64_MAX;
+      /* A block format's box starts on a block and ends on one or at the edge. */
+      if (box_left % bw || box_top % bh || (box_right % bw && box_right != mw) || (box_bottom % bh && box_bottom != mh))
+         return UINT64_MAX;
+      w = box_right - box_left;
+      h = box_bottom - box_top;
+      d = box_back - box_front;
+   }
+   const uint64_t row_bytes = (uint64_t)((w + bw - 1) / bw) * bytes;
+   uint64_t rows = (h + bh - 1) / bh;
+   if (planes == 2)
+      rows += (rows + 1) / 2;
+   if (row_bytes > row_pitch && rows > 1)
+      return UINT64_MAX;
+   const uint64_t slice = (rows - 1) * (uint64_t)row_pitch + row_bytes;
+   if (d > 1 && depth_pitch < slice)
+      return UINT64_MAX;
+   return (uint64_t)(d - 1) * depth_pitch + slice;
+}
+
 void
 npt_resource_update(struct npt_context *ctx,
                     uint64_t resource_id, uint32_t subresource,
                     uint32_t row_pitch, uint32_t depth_pitch,
-                    UNUSED uint32_t byte_size,
+                    uint32_t byte_size,
                     bool has_box,
                     uint32_t box_left, uint32_t box_top, uint32_t box_front,
                     uint32_t box_right, uint32_t box_bottom, uint32_t box_back,
@@ -152,6 +296,17 @@ npt_resource_update(struct npt_context *ctx,
          npt_log("resource_update: D3D12 WriteToSubresource sub %u failed "
                  "0x%08x (mapped=%d pitch=%u/%u)", subresource,
                  (unsigned)hr, (int)mapped, row_pitch, depth_pitch);
+      return;
+   }
+
+   /* What D3D11 reads from the payload, from the resource's own description:
+    * never more than was sent, never an update it cannot take. */
+   const uint64_t footprint =
+      npt_resource_update_footprint(resource, subresource, row_pitch, depth_pitch, has_box,
+                                    box_left, box_top, box_front, box_right, box_bottom, box_back);
+   if (footprint == UINT64_MAX || footprint > byte_size) {
+      npt_log("resource_update: sub %u needs %llu bytes of a %u-byte update (box %d, pitch %u/%u): refused",
+              subresource, (unsigned long long)footprint, byte_size, (int)has_box, row_pitch, depth_pitch);
       return;
    }
 

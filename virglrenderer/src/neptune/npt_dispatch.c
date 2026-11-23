@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <stdatomic.h>
 #include "npt_dispatch.h"
 
 #include <stdlib.h>
@@ -171,19 +172,45 @@ npt_dispatch_resource_update(struct npt_context *ctx,
       return;
    }
 
+   /* The command is whole before anything is allocated or read for it:
+    * its size is its header's and its payload's, and all of it is in the
+    * stream. A short stream never reaches the temporary allocation. */
+   const uint32_t payload_aligned = (cmd.byte_size + 7u) & ~7u;
+   const uint64_t whole = (uint64_t)sizeof(cmd) + payload_aligned;
+   if (header->cmd_size != whole ||
+       payload_aligned > (size_t)(dec->end - dec->cur)) {
+      npt_log("resource_update: a command of %u bytes for a %u-byte payload, %zu left in the stream: refused",
+              header->cmd_size, cmd.byte_size, (size_t)(dec->end - dec->cur));
+      npt_cs_decoder_set_fatal(dec);
+      return;
+   }
+
    /* Zero-copy: SHM payload is contiguous so we skip the temp-pool
     * memcpy on the hot path.  Fall back to alloc_temp if the payload
-    * straddles the stream end (shouldn't happen with contiguous SHM). */
-   const uint32_t payload_aligned = (cmd.byte_size + 7u) & ~7u;
+    * straddles a stream piece (within the process-wide staging budget). */
+   static _Atomic uint64_t staged;
+   bool counted = false;
    void *data = npt_cs_decoder_get_blob_storage(dec, payload_aligned);
    if (likely(data)) {
       dec->cur += payload_aligned;
    } else {
-      data = npt_cs_decoder_alloc_temp(dec, payload_aligned);
-      if (!data) return;
-      npt_cs_decoder_read(dec, payload_aligned, data, cmd.byte_size);
-      if (npt_cs_decoder_get_fatal(dec))
+      if (atomic_fetch_add(&staged, payload_aligned) + payload_aligned > NPT_RESOURCE_UPDATE_STAGING_BUDGET) {
+         atomic_fetch_sub(&staged, payload_aligned);
+         npt_log("resource_update: %u bytes past the staging budget: refused", cmd.byte_size);
+         npt_cs_decoder_set_fatal(dec);
          return;
+      }
+      counted = true;
+      data = npt_cs_decoder_alloc_temp(dec, payload_aligned);
+      if (!data) {
+         atomic_fetch_sub(&staged, payload_aligned);
+         return;
+      }
+      npt_cs_decoder_read(dec, payload_aligned, data, cmd.byte_size);
+      if (npt_cs_decoder_get_fatal(dec)) {
+         atomic_fetch_sub(&staged, payload_aligned);
+         return;
+      }
    }
 
    npt_resource_update(ctx, header->object_id, cmd.subresource,
@@ -192,6 +219,8 @@ npt_dispatch_resource_update(struct npt_context *ctx,
                        cmd.box_left, cmd.box_top, cmd.box_front,
                        cmd.box_right, cmd.box_bottom, cmd.box_back,
                        data);
+   if (counted)
+      atomic_fetch_sub(&staged, payload_aligned);
 }
 
 static void
