@@ -9,6 +9,7 @@
 
 #include "npt_context.h"
 #include "npt_feedback.h"
+#include "npt_otl.h"
 #include "npt_overrides.h"
 
 #include "neptune-protocol/npt_protocol_host_dispatch_types.h"
@@ -23,7 +24,11 @@ npt_override_DC4_Signal(struct npt_dispatch_context *dctx,
                         struct npt_command_ID3D11DeviceContext4_Signal *args,
                         PFN_ID3D11DeviceContext4_Signal original)
 {
+   const uint64_t otl_start = otl_active() ? otl_now() : 0;
    args->ret = original(args->_self, args->pFence, args->Value);
+   if (otl_active())
+      npt_otl_signal(npt_context_from_dispatch(dctx)->ctx_id, otl_start,
+                     args->pFence, args->Value);
 
    if (NPT_SUCCEEDED(args->ret) && args->pFence) {
       npt_feedback_fence_mark_signal(npt_context_from_dispatch(dctx),

@@ -19,6 +19,8 @@
 #include "util/bitscan.h"
 #include "virgl_fence.h"
 
+#include "neptune/otl.h"
+
 #include "proxy_client.h"
 
 struct proxy_fence {
@@ -133,6 +135,8 @@ proxy_context_retire_timeline_fences_locked(struct proxy_context *ctx,
       if (!proxy_fence_is_signaled(fence, timeline->cur_seqno) && !force_retire_all)
          return false;
 
+      if (otl_active())
+         otl_put(otl_now(), OTL_V_RETIRE, ring_idx, fence->seqno, fence->fence_id, ctx->base.ctx_id, 0, 0, 0);
       ctx->base.fence_retire(&ctx->base, ring_idx, fence->fence_id);
 
       /* The fence is done; drop the fd submit_fence registered for it (see
@@ -822,6 +826,8 @@ proxy_context_create(uint32_t ctx_id,
    struct proxy_context *ctx;
 
    const uint32_t capset_id = ctx_flags & VIRGL_RENDERER_CONTEXT_FLAG_CAPSET_ID_MASK;
+
+   otl_init("vtest");
 
    int ctx_fd;
    if (!proxy_client_create_context(client, ctx_id, capset_id, debug_len, debug_name,

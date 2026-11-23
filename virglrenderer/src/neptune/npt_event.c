@@ -4,6 +4,7 @@
  */
 
 #include "npt_event.h"
+#include "npt_otl.h"
 
 #include "npt_context.h"
 #include "npt_library.h"
@@ -414,6 +415,9 @@ npt_event_arm(struct npt_context *ctx, uint64_t token, uint32_t ring_idx,
    struct npt_event_pending_fence *parked =
       event_take_parked_locked(ctx, ring_idx);
    if (parked) {
+      if (otl_active())
+         otl_put(otl_now(), OTL_N_PAIR, ring_idx, parked->fence_id,
+                 (uint64_t)(uintptr_t)event_fd_signal_handle(&pr->proxy), ctx->ctx_id, 0, 0, 0);
       /* AUTO_RELEASE: transfer the arm reference to the sync-queue entry
        * instead of unreffing, so the signal handle the D3D library stored
        * stays valid until it has been written. */
@@ -592,6 +596,9 @@ npt_event_pop_arm_or_park_fence(struct npt_context *ctx, uint32_t ring_idx,
          out->check_fence = p->check_fence;
          out->check_value = p->check_value;
          list_del(&p->head);
+         if (otl_active() && p->proxy)
+            otl_put(otl_now(), OTL_N_PAIR, ring_idx, fence_id,
+                    (uint64_t)(uintptr_t)event_fd_signal_handle(&p->proxy->proxy), ctx->ctx_id, 0, 0, 0);
          if (p->proxy) {
             /* AUTO_RELEASE: transfer the arm reference to the caller's
              * sync-queue entry (released after retirement, post-fire). */

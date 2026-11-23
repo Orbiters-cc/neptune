@@ -21,6 +21,7 @@
 #include "npt_event.h"
 #include "npt_feedback.h"
 #include "npt_heap12.h"
+#include "npt_otl.h"
 #include "npt_overrides.h"
 #include "npt_profile.h"
 #include "npt_queue.h"
@@ -556,6 +557,7 @@ npt_context_create(uint32_t ctx_id,
 
    ctx->ctx_id = ctx_id;
    ctx->retire_fence = retire_fence;
+   npt_otl_init(ctx);
 
 #ifdef ENABLE_RENDER_SERVER_WORKER_THREAD
    ctx->on_worker_thread = true;
@@ -1048,6 +1050,9 @@ npt_context_submit_fence(struct npt_context *ctx,
       ctx->retire_fence(ctx->ctx_id, ring_idx, fence_id);
       return true;
    }
+
+   if (otl_active())
+      otl_put(otl_now(), OTL_N_FENCE, ring_idx, fence_id, ctx->ctx_id, 0, 0, 0, 0);
 
    /* Event rings: the wait source comes from a pending ARM_EVENT_FENCE.
     * Fence and ARM travel on independent channels, so either may arrive

@@ -24,6 +24,7 @@
 #include "npt_cs.h"
 #include "npt_feedback.h"  /* NPT_FEEDBACK_POLL_INTERVAL_NS */
 #include "npt_library.h"   /* struct npt_d3d_library (workaround_flags) */
+#include "npt_otl.h"
 #include "npt_profile.h"
 #include "npt_dispatch.h"
 #include "neptune-protocol/npt_protocol_host_dispatch.h"
@@ -323,12 +324,20 @@ npt_ring_submit_cmd(struct npt_ring *ring,
 
    npt_cs_decoder_set_buffer_stream(dec, buffer, size);
    const bool prof_enabled = npt_profile_enabled();
+   const bool otl = otl_active();
+   if (otl)
+      npt_otl_batch_begin();
    npt_profile_record_read(&ring->profile, (uint32_t)size);
 
    while (npt_cs_decoder_has_command(dec)) {
       /* Peek for per-method attribution; the dispatcher peeks again. */
       uint32_t cmd_type = 0;
       uint64_t t0 = 0;
+      if (otl) {
+         struct npt_command_header peek;
+         npt_cs_decoder_peek(dec, sizeof(peek), &peek, sizeof(peek));
+         npt_otl_command(peek.cmd_type);
+      }
       if (prof_enabled) {
          struct npt_command_header peek;
          npt_cs_decoder_peek(dec, sizeof(peek), &peek, sizeof(peek));
@@ -364,6 +373,8 @@ npt_ring_submit_cmd(struct npt_ring *ring,
       npt_feedback_poll(ring->context, &ring->feedback_poll_skip);
    }
 
+   if (otl)
+      npt_otl_batch_end();
    npt_cs_decoder_reset(dec);
    return true;
 }

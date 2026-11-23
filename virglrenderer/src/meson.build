@@ -117,6 +117,7 @@ neptune_sources = [
    'neptune/npt_heap12.c',
    'neptune/npt_library.c',
    'neptune/npt_profile.c',
+   'neptune/npt_otl.c',
    'neptune/npt_overrides_d3d11_fence.c',
    'neptune/npt_overrides_d3d11_query.c',
    'neptune/npt_queue.c',

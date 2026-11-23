@@ -18,6 +18,7 @@
 
 #include "npt_context.h"
 #include "npt_event.h"
+#include "npt_otl.h"
 #include "npt_profile.h"
 #include "util/u_thread.h"
 
@@ -262,7 +263,9 @@ npt_queue_thread(void *arg)
          goto retire;
       }
 
+      const uint64_t otl_poll = otl_active() ? otl_now() : 0;
       rc = npt_wait_sync_fd(sync->sync_fd, kPollTimeoutMs);
+      const uint64_t otl_woken = otl_active() ? otl_now() : 0;
       if (trace)
          clock_gettime(CLOCK_MONOTONIC, &t1);
 
@@ -286,6 +289,9 @@ npt_queue_thread(void *arg)
                  "retiring as device-lost", queue->ring_idx, sync->fence_id,
                  NPT_QUEUE_DEVICE_LOST_SEC);
       }
+      if (otl_active())
+         otl_put(otl_woken, OTL_N_RETIRE, queue->ring_idx, sync->fence_id, otl_woken, otl_poll,
+                 ctx->ctx_id, rc, 0);
 retire:;
 
       if (trace) {
