@@ -23,6 +23,7 @@
 #include "npt_heap12.h"
 #include "npt_overrides.h"
 #include "npt_profile.h"
+#include "npt_publish.h"
 #include "npt_queue.h"
 #include "npt_ring.h"
 #include "npt_shared.h"
@@ -149,6 +150,9 @@ npt_context_init_dispatch(struct npt_context *ctx)
    d->id3d12commandqueue_dispatch_overrides =
       &npt_id3d12commandqueue_overrides;
    d->id3d12fence_dispatch_overrides = &npt_id3d12fence_overrides;
+
+   /* Nothing unless NPT_SHARED_PUBLISH is set. */
+   npt_publish_install(d);
 }
 
 /* `id` is the guest-allocated handle; `host_ptr` is the host-library

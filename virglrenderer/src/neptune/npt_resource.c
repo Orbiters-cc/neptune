@@ -16,6 +16,7 @@
 
 #include "npt_com.h"
 #include "npt_context.h"
+#include "npt_publish.h"
 #include "npt_transport_defs.h"
 
 #include "neptune-protocol/npt_protocol_host_dispatch_types.h"
@@ -353,6 +354,7 @@ npt_resource_update(struct npt_context *ctx,
                  box_left, box_top, box_right, box_bottom, row_pitch, byte_size);
    update(imm_ctx, resource, subresource, box_arg, payload,
           row_pitch, depth_pitch);
+   npt_publish_wrote(resource);
 
    npt_com_release(imm_ctx);
    npt_com_release(device);

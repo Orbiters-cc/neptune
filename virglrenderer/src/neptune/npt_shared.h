@@ -34,6 +34,33 @@
 #define NPT_SHARED_FD_TYPE VIRGL_RESOURCE_FD_DMABUF
 #endif
 
+#ifdef __APPLE__
+/* The POD both darwin backends hand through GetSharedHandle /
+ * OpenSharedResource, defined here so the renderer neither links nor
+ * includes a backend header.  d3dmetal's dmn_shared_texture_handle and
+ * dxmt's dxmt_shared_texture_handle share this exact ABI: same 'DMTX'
+ * magic, version, and field layout. */
+#define NPT_DARWIN_SHARED_TEXTURE_MAGIC   0x58544D44u /* 'DMTX' */
+/* Every peer that builds or reads the POD declares the same version, and
+ * an import refuses a handle whose version differs rather than read a
+ * layout it does not have. */
+#define NPT_DARWIN_SHARED_HANDLE_VERSION  2u
+struct npt_darwin_shared_texture {
+   uint32_t magic;
+   uint32_t version;
+   int32_t  fd;            /* process-local; sent via SCM_RIGHTS, then patched */
+   uint32_t width, height;
+   uint32_t dxgi_format;
+   uint32_t mip_levels, array_size, sample_count;
+   uint32_t bind_flags, misc_flags, cpu_access;
+   uint64_t stride;        /* bytesPerRow */
+   uint64_t size;          /* logical stride*height */
+   uint64_t offset;        /* byte offset of the surface within fd (a
+                            * surface placed in a shared heap is a window
+                            * into the heap's one object); 0 otherwise */
+};
+#endif
+
 struct npt_context;
 struct npt_cmd_shared_open_res;
 
